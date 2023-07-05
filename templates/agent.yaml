@@ -1,0 +1,310 @@
+# Grafana Agent monitoring config
+extraObjects:
+  # Loki Datasource Added to Grafana dynamically
+  # https://johnharris.io/2019/03/dynamic-configuration-discovery-in-grafana/
+  - apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: prometheus-operator-grafana-datasource-loki
+      namespace: {{ .Release.Namespace }}
+      labels:
+        grafana_datasource: "1"
+    data:
+      datasource.yaml: |-
+        apiVersion: 1
+        datasources:
+          - name: Loki
+            type: loki
+            uid: Loki
+            access: proxy
+            version: 1
+            editable: false
+            isDefault: true
+            url: http://loki-gateway
+            jsonData:
+              derivedFields:
+                - name: TraceID
+                  datasourceUid: Traces
+                  matcherRegex: '"trace_id":"(.*?)"'
+                  url: $${__value.raw}
+
+  - apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: loki-grafana-agent
+
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRole
+    metadata:
+      name: loki-grafana-agent
+    rules:
+    - apiGroups:
+      - ""
+      resources:
+      - nodes
+      - nodes/proxy
+      - nodes/metrics
+      - services
+      - endpoints
+      - pods
+      - events
+      verbs:
+      - get
+      - list
+      - watch
+    - apiGroups:
+      - networking.k8s.io
+      resources:
+      - ingresses
+      verbs:
+      - get
+      - list
+      - watch
+    - nonResourceURLs:
+      - /metrics
+      - /metrics/cadvisor
+      verbs:
+      - get
+
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    metadata:
+      name: loki-grafana-agent
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: ClusterRole
+      name: loki-grafana-agent
+    subjects:
+    - kind: ServiceAccount
+      name: loki-grafana-agent
+      namespace: {{ .Release.Namespace }}
+
+  - apiVersion: monitoring.grafana.com/v1alpha1
+    kind: GrafanaAgent
+    metadata:
+      name: loki
+      labels:
+        app.kubernetes.io/instance: loki
+        app.kubernetes.io/name: loki
+    spec:
+      priorityClassName: system-cluster-critical
+      enableConfigReadAPI: false
+      integrations:
+        namespaceSelector: {}
+        selector:
+          matchLabels:
+            app.kubernetes.io/instance: loki
+            app.kubernetes.io/name: loki
+      logs:
+        instanceSelector:
+          matchLabels:
+            app.kubernetes.io/instance: loki
+            app.kubernetes.io/name: loki
+      serviceAccountName: loki-grafana-agent
+      resources:
+        limits:
+          cpu: "0.1"
+          memory: "64Mi"
+      # grafana agent daemonset config inspired by prom node exporter:
+      # see https://github.com/prometheus-community/helm-charts/blob/main/charts/prometheus-node-exporter/values.yaml#L339
+      # tolerations for agent pods
+      tolerations: 
+        # allow grafana agent to run on linux runner nodes
+        - effect: NoSchedule
+          operator: Equal
+          key: role
+          value: linux-runners
+        # allow grafana agent to run on apps odes
+        - effect: NoSchedule
+          operator: Equal
+          key: role
+          value: apps
+      # Annotations to be added to pods
+      podMetadata:
+        annotations:
+          cluster-autoscaler.kubernetes.io/safe-to-evict: "true"
+
+  - apiVersion: monitoring.grafana.com/v1alpha1
+    kind: Integration
+    metadata:
+      name: loki-eventlogs
+      labels:
+        app.kubernetes.io/instance: loki
+        app.kubernetes.io/name: loki
+    spec:
+      name: eventhandler
+      type:
+        allNodes: false # optional; false is default
+        unique:   false # optional; false is default
+      config:
+        logs_instance: {{ .Release.Namespace }}/loki
+        extra_labels:
+          type: cluster_event
+
+  - apiVersion: monitoring.grafana.com/v1alpha1
+    kind: LogsInstance
+    metadata:
+      name: loki
+      labels:
+        app.kubernetes.io/instance: loki
+        app.kubernetes.io/name: loki
+    spec:
+      clients:
+        - externalLabels:
+            cluster: {{ .Environment.Values.clusterName }}
+          url: http://loki-gateway/loki/api/v1/push
+      podLogsNamespaceSelector: {}
+      podLogsSelector:
+        matchLabels:
+          app.kubernetes.io/instance: loki
+          app.kubernetes.io/name: loki
+  - apiVersion: monitoring.grafana.com/v1alpha1
+    kind: PodLogs
+    metadata:
+      name: appdev-logs
+      labels:
+        app.kubernetes.io/instance: loki
+        app.kubernetes.io/name: loki
+    spec:
+      namespaceSelector:
+        any: true
+      pipelineStages:
+        - cri: {}
+        - json:
+            expressions:
+              trace_id: trace_id
+      relabelings:
+        - action: replace
+          sourceLabels:
+            - __meta_kubernetes_pod_node_name
+          targetLabel: __host__
+        - action: labelmap
+          regex: __meta_kubernetes_pod_label_(.+)
+        - action: replace
+          replacement: $1
+          separator: '-'
+          sourceLabels:
+            - __meta_kubernetes_pod_label_app_kubernetes_io_name
+            - __meta_kubernetes_pod_label_app_kubernetes_io_component
+          targetLabel: __service__
+        - action: replace
+          replacement: $1
+          separator: /
+          sourceLabels:
+            - __meta_kubernetes_namespace
+            - __service__
+          targetLabel: job
+        - action: replace
+          sourceLabels:
+            - __meta_kubernetes_pod_container_name
+          targetLabel: container
+        - action: replace
+          replacement: {{ .Environment.Values.clusterName }}
+          targetLabel: cluster
+        - action: replace
+          replacement: appdev
+          targetLabel: type  
+      selector:
+        matchLabels:
+          app.kubernetes.io/instance: valstro-{{ .Environment.Values.clusterName }}
+  - apiVersion: monitoring.grafana.com/v1alpha1
+    kind: PodLogs
+    metadata:
+      name: runtime-logs
+      labels:
+        app.kubernetes.io/instance: loki
+        app.kubernetes.io/name: loki
+    spec:
+      namespaceSelector:
+        matchNames:
+          - runtime
+          - crossplane-system
+          - dashy
+          - kubecost
+          - monitoring
+          - ambassador
+      pipelineStages:
+        - cri: {}
+      relabelings:
+        - action: replace
+          sourceLabels:
+            - __meta_kubernetes_pod_node_name
+          targetLabel: __host__
+        - action: labelmap
+          regex: __meta_kubernetes_pod_label_(.+)
+        - action: replace
+          replacement: $1
+          separator: '-'
+          sourceLabels:
+            - __meta_kubernetes_pod_label_app_kubernetes_io_name
+            - __meta_kubernetes_pod_label_app_kubernetes_io_component
+          targetLabel: __service__
+        - action: replace
+          replacement: $1
+          separator: /
+          sourceLabels:
+            - __meta_kubernetes_namespace
+            - __service__
+          targetLabel: job
+        - action: replace
+          sourceLabels:
+            - __meta_kubernetes_pod_container_name
+          targetLabel: container
+        - action: replace
+          replacement: {{ .Environment.Values.clusterName }}
+          targetLabel: cluster
+        - action: replace
+          replacement: runtime
+          targetLabel: type
+      selector:
+        matchExpressions:
+          - {key: app.kubernetes.io/instance, operator: Exists}
+  - apiVersion: monitoring.grafana.com/v1alpha1
+    kind: PodLogs
+    metadata:
+      name: runner-logs
+      labels:
+        app.kubernetes.io/instance: loki
+        app.kubernetes.io/name: loki
+    spec:
+      namespaceSelector:
+        matchNames:
+          - actions-runner
+          - actions-runner-operator
+      pipelineStages:
+        - cri: {}
+      relabelings:
+        - action: replace
+          sourceLabels:
+            - __meta_kubernetes_pod_node_name
+          targetLabel: __host__
+        - action: labelmap
+          regex: __meta_kubernetes_pod_label_(.+)
+        - action: replace
+          replacement: $1
+          separator: '-'
+          sourceLabels:
+            - __meta_kubernetes_pod_label_app_kubernetes_io_name
+            - __meta_kubernetes_pod_label_app_kubernetes_io_component
+          targetLabel: __service__
+        - action: replace
+          replacement: $1
+          separator: /
+          sourceLabels:
+            - __meta_kubernetes_namespace
+            - __service__
+          targetLabel: job
+        - action: replace
+          sourceLabels:
+            - __meta_kubernetes_pod_container_name
+          targetLabel: container
+        - action: replace
+          replacement: {{ .Environment.Values.clusterName }}
+          targetLabel: cluster
+        - action: replace
+          replacement: runner
+          targetLabel: type
+      selector:
+        matchExpressions:
+          - {key: app.kubernetes.io/instance, operator: Exists}
+

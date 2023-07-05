@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "lgtm-stack.name" . }}-ds-mimir
+  labels:
+    {{- include "lgtm-stack.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mimir
+    grafana_datasource: "1"
+data:
+  datasource.yaml: |-
+    apiVersion: 1
+    datasources:
+      - name: Mimir
+        type: prometheus
+        access: proxy
+        orgId: 1
+        url: http://{{ include "mimir.gateway.service.name" .Subcharts.mimir }}:{{ .Values.mimir.nginx.service.port }}/prometheus
+        version: 1
+        editable: false
+        jsonData:
+          httpHeaderName1: "X-Scope-OrgID"
+          alertmanagerUid: 'alertmanager'
+        secureJsonData:
+            # TODO: tenant value from config
+            httpHeaderValue1: "tenant1"
+      # - name: Mimir Alertmanager
+      #   uid: alertmanager
+      #   type: alertmanager
+      #   access: proxy
+      #   orgId: 1
+      #   url: http://load-balancer:9009/
+      #   version: 1
+      #   editable: true
+      #   jsonData:
+      #     httpHeaderName1: 'X-Scope-OrgID'
+      #     implementation: 'cortex'
+      #   secureJsonData:
+      #     httpHeaderValue1: 'demo'

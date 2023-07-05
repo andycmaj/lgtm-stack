@@ -1,0 +1,90 @@
+grafana:
+  enabled: true
+  plugins:
+    - grafana-piechart-panel
+
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: "ALL"
+
+    datasources:
+      enabled: true
+      searchNamespace: "ALL"
+      defaultDatasourceEnabled: false
+      isDefaultDatasource: false
+      label: grafana_datasource
+      labelValue: "1"
+
+# grafana agent daemonset config inspired by prom node exporter:
+# see https://github.com/prometheus-community/helm-charts/blob/main/charts/prometheus-node-exporter/values.yaml#L339
+grafana-agent-operator:
+  enabled: true
+  # tolerations for agent pods
+  tolerations:
+    # allow grafana agent to run on all nodes
+    - effect: NoSchedule
+      operator: Exists
+
+  # Annotations to be added to pods
+  podAnnotations:
+    cluster-autoscaler.kubernetes.io/safe-to-evict: "true"
+
+loki:
+  enabled: true
+  loki:
+    auth_enabled: false
+  minio:
+    enabled: true
+  monitoring:
+    lokiCanary:
+      enabled: false
+
+    selfMonitoring:
+      enabled: true
+      grafanaAgent:
+        # we're installing grafana agent as a top-level chart
+        installOperator: false
+  write:
+    replicas: 1
+  read:
+    replicas: 1
+  singleBinary:
+    replicas: 0
+  commonConfig:
+    replication_factor: 1
+  storage:
+    type: "filesystem"
+  test:
+    enabled: false
+
+mimir:
+  enabled: true
+  metaMonitoring:
+    dashboards:
+      enabled: true
+    serviceMonitor:
+      enabled: true
+    grafanaAgent:
+      # we want to install default PodLogs, MetricsInstance, LogsInstance, and GrafanaAgent CRs
+      enabled: true
+      # but we don't want the mimir chart to install the operator
+      installOperator: false
+  ingester:
+    replicas: 1
+    zoneAwareReplication:
+      enabled: false
+  queries:
+    replicas: 1
+  query_scheduler:
+    replicas: 1
+  querier:
+    replicas: 1
+  store_gateway:
+    zoneAwareReplication:
+      enabled: false
+
+minio:
+  enabled: false
